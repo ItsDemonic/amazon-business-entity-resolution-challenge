@@ -56,6 +56,7 @@ def create_dev_sample(
 
     print(f"Created dev sample: {len(sample):,} S1 entities")
     print(f"Seed: {seed}")
+   
     print(f"Output: {output_path}")
 
 
