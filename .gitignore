@@ -55,3 +55,4 @@ __pycache__/
 *.pyc
 .DS_Store
 '@ | Add-Content .gitignore
+output/
