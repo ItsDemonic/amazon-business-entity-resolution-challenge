@@ -1,241 +1,240 @@
-from common.normalize import normalize_name
-from common.normalize import normalize_address
-from common.normalize import name_tokens
-from common.normalize import address_tokens
-from rapidfuzz.fuzz import ratio
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+"""
+High-signal pairwise similarity features.
 
-def jaccard_similarity(tokens_a, tokens_b):
-    """
-    jaccard similarity between two token collections
-    """
+The feature layer is deliberately split into:
+- normalized-string features
+- token features
+- numeric/address-structure features
+- blocker-rank features
 
-    set_a = set(tokens_a)
-    set_b = set(tokens_b)
+All normalization/tokenization comes from common.normalize.
+"""
 
-    if not set_a and not set_b:
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Iterable
+
+import numpy as np
+from rapidfuzz import fuzz
+
+from common.normalize import (
+    address_tokens,
+    name_tokens,
+    normalize_address,
+    normalize_name,
+)
+
+
+FEATURE_NAMES = [
+    "name_levenshtein",
+    "address_levenshtein",
+    "name_token_set_ratio",
+    "name_token_sort_ratio",
+    "address_token_set_ratio",
+    "address_token_sort_ratio",
+    "name_partial_ratio",
+    "address_partial_ratio",
+    "name_wratio",
+    "address_wratio",
+    "name_jaccard",
+    "address_jaccard",
+    "name_token_overlap",
+    "address_token_overlap",
+    "name_exact",
+    "address_exact",
+    "name_length_ratio",
+    "address_length_ratio",
+    "name_digit_jaccard",
+    "address_digit_jaccard",
+    "address_number_match",
+    "address_contains",
+    "name_first_char_match",
+    "country_match",
+    "address_missing_query",
+    "address_missing_candidate",
+    "blocker_rank_score",
+    "blocker_rank_log",
+    "blocker_source_count",
+    "blocker_p1_hit",
+    "blocker_p2_hit",
+    "blocker_p3_hit",
+]
+
+
+_DIGIT_RE = re.compile(r"\d+")
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedRecord:
+    name: str
+    address: str
+    name_tokens: tuple[str, ...]
+    address_tokens: tuple[str, ...]
+    country: str
+    name_digits: frozenset[str]
+    address_digits: frozenset[str]
+
+
+def prepare_record(
+    name: str,
+    address: str,
+    country: str,
+) -> PreparedRecord:
+    nn = normalize_name(name)
+    na = normalize_address(address)
+    nt = tuple(name_tokens(name))
+    at = tuple(address_tokens(address))
+
+    return PreparedRecord(
+        name=nn,
+        address=na,
+        name_tokens=nt,
+        address_tokens=at,
+        country=(country or "").strip().casefold(),
+        name_digits=frozenset(_DIGIT_RE.findall(nn)),
+        address_digits=frozenset(_DIGIT_RE.findall(na)),
+    )
+
+
+def _jaccard(a: Iterable[str], b: Iterable[str]) -> float:
+    aa = set(a)
+    bb = set(b)
+    if not aa and not bb:
         return 1.0
-    if not set_a or not set_b:
+    union = aa | bb
+    return len(aa & bb) / len(union) if union else 0.0
+
+
+def _overlap(a: Iterable[str], b: Iterable[str]) -> float:
+    aa = set(a)
+    bb = set(b)
+    if not aa or not bb:
         return 0.0
+    return len(aa & bb) / min(len(aa), len(bb))
 
-    return len(set_a & set_b) / len(set_a | set_b)
 
-def token_overlap(tokens_a, tokens_b):
-    """
-    fraction of tokens in a that also appear in b
-    """
-
-    set_a = set(tokens_a)
-    set_b = set(tokens_b)
-
-    if not set_a:
-        return 0.0
-    return len(set_a & set_b) / len(set_a)
-
-def country_match(country_a, country_b):
-    """
-    1 if countries match, 0 otherwise
-    """
-
-    if not country_a or not country_b:
-        return 0.0
-    return float(country_a == country_b)
-
-def missing_address(address):
-    """
-    1 if address is empty/missing, 0 otherwise
-    """
-    normalized = normalize_address(address)
-
-    return float(not normalized)
-
-def levenshtein_similarity(text_a, text_b):
-    """
-    Normalized edit similarity between 0 and 1
-    """
-
-    text_a = str(text_a or "")
-    text_b = str(text_b or "")
-
-    if not text_a and not text_b:
+def _safe_ratio(a: str, b: str, scorer) -> float:
+    if not a and not b:
         return 1.0
-    
-    if not text_a or not text_b:
+    if not a or not b:
         return 0.0
-    
-    return ratio(text_a, text_b) / 100.0
+    return float(scorer(a, b)) / 100.0
 
-def name_levenshtein(name_a, name_b):
-    return levenshtein_similarity(
-        normalize_name(name_a),
-        normalize_name(name_b)
+
+def _length_ratio(a: str, b: str) -> float:
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    return min(len(a), len(b)) / max(len(a), len(b))
+
+
+def pair_features_prepared(
+    query: PreparedRecord,
+    candidate: PreparedRecord,
+    *,
+    blocker_rank: int = 0,
+    source_count: int = 0,
+    p1_hit: int = 0,
+    p2_hit: int = 0,
+    p3_hit: int = 0,
+) -> np.ndarray:
+    qn, cn = query.name, candidate.name
+    qa, ca = query.address, candidate.address
+
+    rank_score = 1.0 / (60.0 + float(blocker_rank)) if blocker_rank > 0 else 0.0
+    rank_log = 1.0 / np.log2(2.0 + float(blocker_rank)) if blocker_rank > 0 else 0.0
+
+    return np.asarray(
+        [
+            _safe_ratio(qn, cn, fuzz.ratio),
+            _safe_ratio(qa, ca, fuzz.ratio),
+            _safe_ratio(
+                " ".join(query.name_tokens),
+                " ".join(candidate.name_tokens),
+                fuzz.token_set_ratio,
+            ),
+            _safe_ratio(
+                " ".join(query.name_tokens),
+                " ".join(candidate.name_tokens),
+                fuzz.token_sort_ratio,
+            ),
+            _safe_ratio(
+                " ".join(query.address_tokens),
+                " ".join(candidate.address_tokens),
+                fuzz.token_set_ratio,
+            ),
+            _safe_ratio(
+                " ".join(query.address_tokens),
+                " ".join(candidate.address_tokens),
+                fuzz.token_sort_ratio,
+            ),
+            _safe_ratio(qn, cn, fuzz.partial_ratio),
+            _safe_ratio(qa, ca, fuzz.partial_ratio),
+            _safe_ratio(qn, cn, fuzz.WRatio),
+            _safe_ratio(qa, ca, fuzz.WRatio),
+            _jaccard(query.name_tokens, candidate.name_tokens),
+            _jaccard(query.address_tokens, candidate.address_tokens),
+            _overlap(query.name_tokens, candidate.name_tokens),
+            _overlap(query.address_tokens, candidate.address_tokens),
+            float(bool(qn) and bool(cn) and qn == cn),
+            float(bool(qa) and bool(ca) and qa == ca),
+            _length_ratio(qn, cn),
+            _length_ratio(qa, ca),
+            _jaccard(query.name_digits, candidate.name_digits),
+            _jaccard(query.address_digits, candidate.address_digits),
+            float(
+                bool(query.address_digits)
+                and bool(candidate.address_digits)
+                and bool(query.address_digits & candidate.address_digits)
+            ),
+            float(
+                bool(qa)
+                and bool(ca)
+                and (qa in ca or ca in qa)
+            ),
+            float(bool(qn) and bool(cn) and qn[0] == cn[0]),
+            float(query.country == candidate.country),
+            float(not qa),
+            float(not ca),
+            rank_score,
+            rank_log,
+            float(source_count),
+            float(p1_hit),
+            float(p2_hit),
+            float(p3_hit),
+        ],
+        dtype=np.float32,
     )
 
-def address_levenshtein(address_a, address_b):
-    return levenshtein_similarity(
-        normalize_address(address_a),
-        normalize_address(address_b)
+
+def pair_features(
+    query_name: str,
+    query_address: str,
+    query_country: str,
+    candidate_name: str,
+    candidate_address: str,
+    candidate_country: str,
+    *,
+    blocker_rank: int = 0,
+    source_count: int = 0,
+    p1_hit: int = 0,
+    p2_hit: int = 0,
+    p3_hit: int = 0,
+) -> np.ndarray:
+    return pair_features_prepared(
+        prepare_record(query_name, query_address, query_country),
+        prepare_record(candidate_name, candidate_address, candidate_country),
+        blocker_rank=blocker_rank,
+        source_count=source_count,
+        p1_hit=p1_hit,
+        p2_hit=p2_hit,
+        p3_hit=p3_hit,
     )
 
-def name_jaccard(name_a, name_b):
-    return jaccard_similarity(
-        name_tokens(name_a),
-        name_tokens(name_b)
-    )
 
-def address_jaccard(address_a, address_b):
-    return jaccard_similarity(
-        address_tokens(address_a),
-        address_tokens(address_b)
-    )
-
-def name_token_overlap(name_a, name_b):
-    return token_overlap(
-        name_tokens(name_a),
-        name_tokens(name_b)
-    )
-
-def address_token_overlap(address_a, address_b):
-    return token_overlap(
-        address_tokens(address_a),
-        address_tokens(address_b),
-    )
-
-class TfidfSimilarity:
-    """
-    Reusable TF-IDF representation for candidate similarity
-    """
-
-    def __init__(self, analyzer="word", ngram_range=(1, 2), min_df=2):
-        
-        self.vectorizer = TfidfVectorizer(analyzer=analyzer, ngram_range=ngram_range, min_df=min_df)
-
-        self.matrix = None
-
-    def fit(self, texts):
-        """
-        Fit TF-IDF on a corpus
-        """
-
-        self.matrix = self.vectorizer.fit_transform(texts)
-
-        return self
-    
-    def transform(self, texts):
-        """
-        Transforms texts using fitted TF-IDF vocabulary
-        """
-
-        if self.matrix is None:
-            raise RuntimeError("TF-IDF similarity must be fitted first")
-        
-        return self.vectorizer.transform(texts)
-    
-    def similarity(self, text_a, text_b):
-        """
-        Cosine similarity between 2 texts
-        """
-
-        vectors = self.vectorizer.transform([text_a, text_b])
-
-        return float(cosine_similarity(vectors[0], vectors[1])[0, 0])
-
-def compute_similarity_features(source_record, candidate_record):
-    """
-    Compute pairwise features for one S1 record
-    and one S2/S3 candidate.
-    """
-
-    name_a = source_record["business_name"]
-    name_b = candidate_record["business_name"]
-
-    address_a = source_record["business_address"]
-    address_b = candidate_record["business_address"]
-
-    country_a = source_record["country"]
-    country_b = candidate_record["country"]
-
-    return {
-        "name_levenshtein": name_levenshtein(name_a, name_b),
-
-        "address_levenshtein": address_levenshtein(address_a, address_b),
-
-        "name_jaccard": name_jaccard(name_a, name_b),
-
-        "address_jaccard": address_jaccard(address_a, address_b),
-
-        "name_token_overlap": name_token_overlap(name_a, name_b),
-
-        "address_token_overlap": address_token_overlap(address_a, address_b),
-
-        "country_match": country_match(country_a, country_b,),
-
-        "address_missing_a": missing_address(address_a),
-
-        "address_missing_b": missing_address(address_b),
-    }
-
-if __name__ == "__main__":
-
-    record_a = {
-        "business_name": "Amazon Technologies Pvt Ltd",
-        "business_address": "123 MG Road Bangalore",
-        "country": "India",
-    }
-
-    record_b = {
-        "business_name": "Amazon Technology Private Limited",
-        "business_address": "123 MG Road Bengaluru",
-        "country": "India",
-    }
-
-    name_corpus = [
-    "Amazon Technologies Pvt Ltd",
-    "Amazon Technology Private Limited",
-    "Amazon Fresh Store",
-    "Flipkart Internet Private Limited",
-    "Reliance Industries Limited",
-    ]
-
-    address_corpus = [
-        "123 MG Road Bangalore",
-        "123 MG Roag Bengaluru",
-        "45 MG Road Bangalore",
-        "221B Baker Street Delhi",
-        "10 Park Street Kolkata",
-    ]
-
-    # Create TF-IDF objects
-    name_tfidf = TfidfSimilarity()
-    address_tfidf = TfidfSimilarity()
-
-    # Fit them on a small example corpus
-    name_tfidf.fit(name_corpus)
-
-    address_tfidf.fit(address_corpus)
-
-    # Calculate TF-IDF cosine similarities
-    name_tfidf_score = name_tfidf.similarity(
-        record_a["business_name"],
-        record_b["business_name"],
-    )
-
-    address_tfidf_score = address_tfidf.similarity(
-        record_a["business_address"],
-        record_b["business_address"],
-    )
-
-    # Calculate all the other features
-    features = compute_similarity_features(
-        record_a,
-        record_b,
-    )
-
-    # Add TF-IDF features
-    features["name_tfidf_cosine"] = name_tfidf_score
-    features["address_tfidf_cosine"] = address_tfidf_score
-
-    # Print everything
-    for name, value in features.items():
-        print(f"{name}: {value:.4f}")
+def compute_similarity_features(*args, **kwargs) -> dict[str, float]:
+    values = pair_features(*args, **kwargs)
+    return dict(zip(FEATURE_NAMES, values.tolist()))

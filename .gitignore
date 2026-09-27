@@ -1,2 +1,57 @@
-dataset/*
-!dataset/.gitkeep
+@'
+
+# Challenge data
+dataset/
+
+# Generated blocking indexes / outputs
+blocking/*.tsv
+blocking/*.bin
+blocking/*.npy
+blocking/*.pkl
+blocking/*.faiss
+blocking/.candidates_*/
+blocking/embedding_index/
+blocking/embedding_test_index/
+blocking/minhash_index/
+blocking/minhash_test_index/
+
+# Generated matcher artifacts
+matching/*.npz
+matching/*.joblib
+
+# Generated validation artifacts
+features/validation_output/
+
+# Python / OS
+__pycache__/
+*.pyc
+.DS_Store
+'@ | Add-Content .gitignore
+
+@'
+
+# Generated challenge artifacts
+blocking/*.tsv
+blocking/*.bin
+blocking/*.npy
+blocking/*.pkl
+blocking/*.faiss
+blocking/*.json
+blocking/.candidates_*/
+blocking/embedding_index/
+blocking/minhash_index/
+blocking/minhash_test_index/
+blocking/final_*
+blocking/dev_pruned_*
+blocking/matcher_*
+
+matching/*.npz
+matching/*.joblib
+
+features/validation_output/
+
+dataset/
+__pycache__/
+*.pyc
+.DS_Store
+'@ | Add-Content .gitignore
