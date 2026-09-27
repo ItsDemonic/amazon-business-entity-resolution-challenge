@@ -6,6 +6,55 @@ In large-scale commercial platforms, business identity data arrives from multipl
 
 Source 1 is the deduplicated reference source. Your task is to find all matching records from Source 2 and Source 3 for each Source 1 entity. A Source 1 entity may match zero, one, or many records from Source 2 and Source 3.
 
+
+# Scalable Business Entity Resolution Pipeline
+
+An end-to-end entity resolution system built for the Amazon ML Challenge.
+
+## Problem
+
+Given records from multiple sources, identify which records refer to the same real-world business/entity despite differences in names, addresses, countries, formatting, and missing fields.
+
+## Approach
+
+The pipeline uses a multi-stage design:
+
+1. **Normalization**
+   - Standardizes names, addresses, countries, and tokens.
+
+2. **Candidate Generation / Blocking**
+   - Optimized token-based inverted index
+   - MinHash + LSH for approximate matching
+   - Multilingual sentence embeddings with FAISS
+   - Candidate sets are combined to improve recall.
+
+3. **Similarity Features**
+   - Name/address token similarity
+   - Jaccard similarity
+   - TF-IDF similarity
+   - Other structured and text-based features
+
+4. **Matching**
+   - Gradient-boosted classifier ranks candidate pairs.
+   - Threshold and top-k selection are tuned on validation data.
+
+## Engineering Highlights
+
+- Designed for datasets with **10M+ training records and ~10M test candidates**.
+- Implemented streaming and batched processing to handle large datasets.
+- Used compact indexes and memory-aware candidate generation.
+- Evaluated blocker recall independently before training the final matcher.
+- Built the pipeline as modular components so blocking, features, and matching can be developed independently.
+
+## Project Structure
+
+```text
+common/     - normalization and shared utilities
+blocking/   - candidate generation and recall evaluation
+features/   - similarity feature engineering
+matching/   - matcher training, tuning, and inference
+utils/      - validation utilities
+
 ### File Format
 
 **All files in this challenge are tab-separated (`.tsv`), and your submissions must be tab-separated too.** Tabs are used because business addresses and the ID list columns both contain commas. Read them with an explicit tab separator, for example:
